@@ -1,0 +1,63 @@
+name: Mirror models
+
+# Copies the two listening models earshot needs (pinned revisions) and CPU-only PyTorch wheels into a GitHub
+# release, so cloud sessions that cannot reach Hugging Face or the PyTorch index can still install them.
+# Run it from the Actions tab (Run workflow). Re-running with the same tag replaces the files.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag
+        default: models-v1
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || 'models-v1' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Download pinned earshot models
+        run: |
+          pip install -q "huggingface_hub>=0.24"
+          python scripts/fetch_earshot_models.py hf
+          mkdir -p dist
+          tar -C hf -cf dist/earshot-clap-hf-cache.tar models--laion--larger_clap_general
+          tar -C hf -cf dist/earshot-ast-hf-cache.tar models--MIT--ast-finetuned-audioset-10-10-0.4593
+
+      - name: Download CPU-only PyTorch wheels (Linux x86_64, Python 3.12 and 3.13)
+        run: |
+          for py in 3.12 3.13; do
+            tag=cp${py/./}
+            mkdir -p "wheels/$tag"
+            pip download torch --no-deps --only-binary=:all: \
+              --index-url https://download.pytorch.org/whl/cpu \
+              --platform manylinux_2_28_x86_64 --python-version "$py" -d "wheels/$tag"
+            # wheel names contain '+cpu'; a tar keeps the exact name pip needs
+            tar -C "wheels/$tag" -cf "dist/torch-cpu-$tag.tar" .
+          done
+
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+          ls -la
+
+      - name: Publish release
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --title "$TAG" --notes-file MODELS.md
+          fi
